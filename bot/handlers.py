@@ -1,53 +1,27 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from config import DEVELOPER_LINK
-from tasks.tasks import process_image_task
+from celery_app import celery_app
+from bot.ipfs_uploader import upload_to_ipfs
+from bot.web3_client import mint_nft
+import telegram
+from config import BOT_TOKEN
 
-# תפריט קבוע
-KEYBOARD = InlineKeyboardMarkup([
-    [InlineKeyboardButton("🔑 מזהה צ'אט", callback_data="get_id")],
-    [InlineKeyboardButton("👤 מזהה המשתמש", callback_data="get_user_id")],
-    [InlineKeyboardButton("📸 עיבוד תמונה", callback_data="process_help")],
-    [InlineKeyboardButton("📩 צור קשר עם המפתח", url=DEVELOPER_LINK)],
-])
+bot = telegram.Bot(token=BOT_TOKEN)
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "שלום! אני BotPicProcessor 🤖\n\n"
-        "• 🔑 קבלת מזהה הקבוצה\n"
-        "• 👤 קבלת מזהה המשתמש\n"
-        "• 📸 עיבוד תמונות\n\n"
-        "בחרו באפשרות מתחת ⬇️"
-    )
-    await update.message.reply_text(text, reply_markup=KEYBOARD)
+@celery_app.task
+def create_nft_task(src_path: str, chat_id: int, user_wallet: str):
+    try:
+        # 1. עיבוד רגיל (resize) – אפשר למחוק או להרחיב
+        # 2. העלאה ל-IPFS
+        token_uri = upload_to_ipfs(src_path)
 
-async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
+        # 3. קריאה לחוזה חכם
+        tx_hash = mint_nft(user_wallet, token_uri)
 
-    if data == "get_id":
-        await query.message.reply_text(f"🔑 Chat ID: `{query.message.chat.id}`", parse_mode="Markdown")
-    elif data == "get_user_id":
-        await query.message.reply_text(f"👤 User ID: `{query.from_user.id}`", parse_mode="Markdown")
-    else:  # process_help
-        help_text = (
-            "לשליחת תמונה:\n"
-            "1. שלחו תמונה בפורמט Photo או File.\n"
-            "2. תתקבלנה 3 גרסאות אוטומטיות."
+        # 4. משוב למשתמש
+        msg = (
+            f"NFT נוצר בהצלחה!\n\n"
+            f"Token URI: {token_uri}\n"
+            f"Transaction Hash: {tx_hash}"
         )
-        await query.message.reply_text(help_text)
-
-async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = await update.message.photo[-1].get_file()
-    dest = file.file_unique_id + ".jpg"
-    await file.download_to_drive(dest)
-    await update.message.reply_text("✅ מוריד ומתחיל לעבד…")
-
-    # שליחת משימה ל־Celery
-    process_image_task.delay(dest, update.effective_chat.id, update.from_user.id)
-
-def register_handlers(app):
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CallbackQueryHandler(on_button))
-    app.add_handler(MessageHandler(filters.PHOTO, on_photo))
+        bot.send_message(chat_id=chat_id, text=msg)
+    except Exception as e:
+        bot.send_message(chat_id=chat_id, text=f"❌ שגיאה ביצירת ה־NFT: {e}")
