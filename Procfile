@@ -1,1 +1,2 @@
-worker: python bot_pic_processor_buttons.py
+web: python main.py
+worker: celery -A tasks.celery_app worker --loglevel=info
