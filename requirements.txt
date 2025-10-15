@@ -3,3 +3,6 @@ Pillow
 python-dotenv
 celery
 redis
+web3
+ipfshttpclient
+
